@@ -4,23 +4,21 @@ from chipwhisperer.analyzer.attacks.algorithmsbase import AlgorithmsBase
 import IPython as ip
 
 class CPAProgressiveOneSubkey:
-    """This class is the CUSTOMIZED basic progressive CPA attack, capable of adding traces onto a variable with previous data"""
+    """This class is the WELFORD BASED CUSTOMIZED basic progressive CPA attack, capable of adding traces onto a variable with previous data"""
     def __init__(self, model):
         self.model = model
-        self.sumhq = [0] * self.model.getPermPerSubkey()
-        self.sumtq = [0]
-        self.sumt = [0]
-        self.sumh = [0] * self.model.getPermPerSubkey()
-        self.sumht = [0] * self.model.getPermPerSubkey()
         self.totalTraces = 0
         self.modelstate = {'knownkey': None}
 
+        # Initialize Welford's Variables 
+        self.n_welford = 0
+        self.mean_welford = None  # Will be initialized based on trace shape
+        self.M2_welford = None
+        self.sum_cross_welford = [None] * self.model.getPermPerSubkey()
+        self.stored_welford_variances = []  # for storing wellford variance
+        self.welford_diffs = [None] * self.model.getPermPerSubkey()
 
-        
-    # List to store tuples of (sumden1, sumden2) for each bnum iteration
-        self.stored_sumden_pairs = []  
-
-    def oneSubkey(self, bnum, pointRange, traces_all, numtraces, plaintexts, ciphertexts, knownkeys, progressBar, state, pbcnt, accumulate_sumdens):
+    def oneSubkey(self, bnum, pointRange, traces_all, numtraces, plaintexts, ciphertexts, knownkeys, progressBar, state, pbcnt, accumulate_variances):
         diffs = [0] * self.model.getPermPerSubkey()
         self.totalTraces += numtraces
 
@@ -29,15 +27,24 @@ class CPAProgressiveOneSubkey:
         else:
             traces = traces_all[:, pointRange[0]:pointRange[1]]
 
-
-        self.sumtq += np.sum(np.square(traces), axis=0, dtype=np.longdouble)
-        self.sumt += np.sum(traces, axis=0, dtype=np.longdouble)
-        sumden2 = np.square(self.sumt) - self.totalTraces * self.sumtq
+        # Update Welford
+        for trace in traces:
+            self.n_welford += 1
+            if self.mean_welford is None:
+                self.mean_welford = np.zeros_like(trace, dtype=np.longdouble)
+                self.M2_welford = np.zeros_like(trace, dtype=np.longdouble)
+            delta = trace - self.mean_welford #difference between the new trace and old mean
+            self.mean_welford += delta / self.n_welford
+            delta2 = trace - self.mean_welford #difference between the new trace and the new mean (after update)
+            self.M2_welford += delta * delta2 # building sum of squared diffs
+            
+            # if accumulate_variances and self.n_welford > 1:
+            #     current_variance = self.M2_welford / (self.n_welford - 1)
+            #     self.stored_welford_variances.append((np.copy(current_variance), bnum, self.n_welford))
 
         #For each 0..0xFF possible value of the key byte
         for key in range(0, self.model.getPermPerSubkey()):
             #Initialize arrays & variables to zero
-            sumnum = np.zeros(len(traces[0, :]))
             hyp = [0] * numtraces
 
             #Formula for CPA & description found in "Power Analysis Attacks"
@@ -47,7 +54,7 @@ class CPAProgressiveOneSubkey:
             # doesn't require you to recalculate everything
             prev_cts = np.insert(ciphertexts[:-1], 0, 0, axis=0)
             prev_pts = np.insert(plaintexts[:-1], 0, 0, axis=0)
-            
+
             #Generate hypotheticals
             for tnum in range(numtraces):
                 if len(plaintexts) > 0:
@@ -78,23 +85,48 @@ class CPAProgressiveOneSubkey:
 
             hyp = np.array(hyp)
 
-            self.sumh[key] += np.sum(hyp, axis=0, dtype=np.longdouble)
-            self.sumht[key] += np.sum(np.multiply(np.transpose(traces), hyp), axis=1, dtype=np.longdouble)
+            if self.sum_cross_welford[key] is None:
+                self.sum_cross_welford[key] = np.zeros_like(self.mean_welford, dtype=np.longdouble)
 
-            sumnum = self.totalTraces * self.sumht[key] - self.sumh[key] * self.sumt
+            centered_hyp = hyp - np.mean(hyp)
+            for i in range(len(traces)):
+                centered_trace = traces[i] - self.mean_welford
+                self.sum_cross_welford[key] += centered_hyp[i] * centered_trace
 
-            self.sumhq[key] += np.sum(np.square(hyp), axis=0, dtype=np.longdouble)
+            #Store Welford variances
+            if accumulate_variances and self.n_welford >1:
+                current_variance = self.M2_welford / (self.n_welford - 1)
+                self.stored_welford_variances.append((np.copy(current_variance), bnum, self.n_welford))
 
-            sumden1 = (np.square(self.sumh[key]) - self.totalTraces * self.sumhq[key])
+            #THIS GUESSES CORRECTLY THE KEY BUT GIVES CORRELATIONS > 1!!!
+            # if self.n_welford > 1:
+            #     hyp_var = np.sum(centered_hyp ** 2)
+            #     denom = np.sqrt(hyp_var * self.M2_welford)
+            #     welford_corr = self.sum_cross_welford[key] / denom
+            #     self.welford_diffs[key] = welford_corr
+            #     diffs[key] = welford_corr
 
-            # Store tuple (sumden1, bnum, sumden2) in list
+        
+            #OTHER APPROACH, STILL CORR >1
+        
+            if self.n_welford > 1:
+                n = self.n_welford
 
-            if accumulate_sumdens:
-                self.stored_sumden_pairs.append((sumden1, bnum, sumden2))
+                hyp_sum = np.sum(centered_hyp, dtype=np.longdouble)
+                hyp_sqsum = np.sum(centered_hyp ** 2, dtype=np.longdouble)
 
-            sumden = sumden1 * sumden2
+                # sumden1 = (hyp_sum ** 2 - n * hyp_sqsum)
+                sumden1 = hyp_sqsum * n - hyp_sum ** 2
 
-            diffs[key] = sumnum / np.sqrt(sumden)
+                trace_variance = self.M2_welford / (self.n_welford - 1)
+
+                denom = np.sqrt(sumden1 * trace_variance)
+                denom[denom == 0] = 1e-12  # prevent division by zero
+
+                corr = self.sum_cross_welford[key] / denom
+
+                self.welford_diffs[key] = corr
+                diffs[key] = corr
 
             if progressBar:
                 progressBar.updateStatus(pbcnt, (self.totalTraces - numtraces, self.totalTraces - 1, bnum))
@@ -102,6 +134,7 @@ class CPAProgressiveOneSubkey:
 
         return (diffs, pbcnt)
 
+   
 class CPAProgressiveCustom(AlgorithmsBase):
     """CPA Attack done as a loop, using an algorithm which can progressively add traces & give output stats"""
     _name = "Progressive Custom"
@@ -155,11 +188,11 @@ class CPAProgressiveCustom(AlgorithmsBase):
 
                 for bnum_bf in self.brange:
                     #Chnage values according to the interval of traces that we want to study
-                    accumulate_sumdens = False
-                    if tstart >=0 and tend <= 1000:   # Error interval for ECG data is [18500, 46975]
-                        accumulate_sumdens = True
+                    # accumulate_variances = True
+                    if tstart >= 0 and tend <= 1001:   # Error interval for ECG data is [18500, 46975]
+                        accumulate_variances = True
                     (data, pbcnt) = cpa[bnum_bf].oneSubkey(
-                        bnum_bf, pointRange, traces, tend - tstart, textins, textouts, knownkeys, progressBar, cpa[bnum_bf].modelstate, pbcnt, accumulate_sumdens
+                        bnum_bf, pointRange, traces, tend - tstart, textins, textouts, knownkeys, progressBar, cpa[bnum_bf].modelstate, pbcnt, accumulate_variances
                     )
                     self.stats.update_subkey(bnum_bf, data, tnum=tend)
 
@@ -167,9 +200,9 @@ class CPAProgressiveCustom(AlgorithmsBase):
                 tstart += self._reportingInterval
                 if self.sr:
                     self.sr()
-    def get_sumden_pairs(self):
-        """Method to collect and return stored sumden1 and sumden2 pairs from all subkey instances."""
-        sumden_pairs = []
+
+    def get_welford_variances(self):
+        all_vars = []
         for subkey_instance in self.subkey_instances:
-            sumden_pairs.extend(subkey_instance.stored_sumden_pairs)
-        return sumden_pairs
+            all_vars.extend(subkey_instance.stored_welford_variances)
+        return all_vars
