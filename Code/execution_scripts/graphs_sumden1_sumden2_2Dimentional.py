@@ -6,8 +6,9 @@ import matplotlib.pyplot as plt
 import os
 
 # --- Adjust this path to your desired project file ---
-project_file = "/Users/loredana/Desktop/TFG/randattackarduino_prueba/randattackarduino_prueba"
+project_file = "/Users/loredana/Desktop/TFG/attackarduino_Abraham_ECG_Malo_16_bits/attackarduino_Abraham_ECG_Malo_16_bits"
 print(f"Project file: {project_file}")
+project_name = os.path.basename(project_file)
 
 # Open the project
 project = cw.open_project(project_file)
@@ -25,9 +26,7 @@ print(attack_run_output)
 
 # Retrieve the ChipWhisperer Results object that has find_maximums()
 results_obj = attack.get_statistics()  # This returns a standard 'Results' instance
-print("\nResults Object:", results_obj)
 
-# Some scripts store "sumden_pairs" for custom usage. If you have a custom method, try:
 try:
     sumden_pairs = attack.algorithm.get_sumden_pairs()
     print("\nCustom sumden_pairs (sumden1, sumden2) retrieved from get_sumden_pairs():")
@@ -38,12 +37,16 @@ except AttributeError:
     print("\nNo 'get_sumden_pairs()' method on this attack instance.")
     sumden_pairs = []
 
+max_info =results_obj.find_maximums()
+numSubkeys = results_obj.numSubkeys
+
 # Directory for saving graphs
 output_dir = os.path.join(os.getcwd(), "graphs/Mangard")
 os.makedirs(output_dir, exist_ok=True)
 
-# If your .cfg says numTraces=1000, 5000, or 10000, set it here:
-numTraces = 1000
+# If the .cfg says numTraces=1000, 5000, or 10000, set it here:
+
+numTraces = 7000
 
 # Check/Save metadata to avoid overwriting
 def check_existing_graph(file_path, project_file, numTraces):
@@ -60,13 +63,13 @@ def save_metadata(file_path, project_file, numTraces):
     with open(metadata_file, "w") as f:
         f.write(f"{project_file},{numTraces}")
 
-############################################
-# Example sumden1/sumden2 visualization code
-############################################
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
 def visualize_sumden_by_bnum(sumden_pairs, numTraces, project_file):
     """
-    Example code to visualize sumden1 vs. Traces and sumden2 heatmaps per bnum
-    if sumden_pairs is available. Adjust as needed.
+  
     """
     if not sumden_pairs:
         print("No sumden_pairs data to visualize for sumden1/sumden2.")
@@ -137,23 +140,103 @@ def visualize_sumden_by_bnum(sumden_pairs, numTraces, project_file):
             save_metadata(sumden2_file, project_file, numTraces)
             plt.close()
             print(f"Saved lineplot for bnum={bnum} => {sumden2_file}")
+            
+def plot_sumden1_best_guess(sumden_pairs, results_obj,
+                            update_interval, numTraces, output_dir):
+
+    # 1) Find the best‐guess key for each subkey byte at the *end* of the attack
+    max_info = results_obj.find_maximums()
+    best_hyps = { bnum: max_info[bnum][0][0]
+                  for bnum in range(results_obj.numSubkeys) }
+
+    # 2) Organize the stored pairs into a dict[(bnum, hyp)] → [sumden1, ...]
+    #    (we assume you modify your CPA to store the hypothesis index too)
+    by_pair = {}
+    for (sumden1, bnum, hyp, sumden2) in sumden_pairs:
+        by_pair.setdefault((bnum, hyp), []).append(sumden1)
+
+    n_batches = numTraces // update_interval
+    x = [(i+1)*update_interval for i in range(n_batches)]
+
+    # 3) Plot, for each subkey byte, only the best‐guess curve
+    for bnum, hyp in best_hyps.items():
+        y = by_pair.get((bnum, hyp), [])
+        if len(y) != n_batches:
+            print(f"Warning: bnum={bnum}, hyp={hyp} has {len(y)} points, expected {n_batches}")
+            continue
+
+        plt.figure(figsize=(8,4))
+        plt.plot(x, y, marker='o')
+        plt.title(f"Sumden1 (best guess={hyp:#02x}) vs. Traces (bnum={bnum})")
+        plt.xlabel("Traces processed")
+        plt.ylabel("Sumden1")
+        plt.grid(True)
+        plt.savefig(f"{output_dir}/sumden1_best_bnum{bnum}.png", dpi=300)
+        plt.close()
+        
+def plot_sumden2_at_maxidx(sumden_pairs, results_obj,
+                           update_interval, numTraces, output_dir):
+
+    # 1) Find, for each subkey, its max_idx (sample-point) & best hypothesis
+    max_info = results_obj.find_maximums()
+    # max_info[bnum][0] == (best_hyp, max_idx, best_corr)
+    info = { bnum: (max_info[bnum][0][0], max_info[bnum][0][1])
+             for bnum in range(results_obj.numSubkeys) }
+
+    # 2) Organize the stored sumden2 into dict[(bnum,hyp)] → [ sumden2_vector, ... ]
+    by_pair = {}
+    for (sumden1, bnum, hyp, sumden2) in sumden_pairs:
+        by_pair.setdefault((bnum, hyp), []).append(sumden2)
+
+    n_batches = numTraces // update_interval
+    x = [(i+1)*update_interval for i in range(n_batches)]
+
+    # 3) Plot, for each subkey, the sumden2 at its max_idx for its best hypothesis
+    for bnum, (hyp, max_idx) in info.items():
+        vectors = by_pair.get((bnum, hyp), [])
+        if len(vectors) != n_batches:
+            print(f"Warning: bnum={bnum}, hyp={hyp} has {len(vectors)} batches, expected {n_batches}")
+            continue
+
+        # extract the single sample-point from each batch
+        y = [ vec[max_idx] for vec in vectors ]
+
+        plt.figure(figsize=(8,4))
+        plt.plot(x, y, marker='x')
+        plt.title(f"Sumden2[@{max_idx}] (best guess={hyp:#02x}) vs. Traces (bnum={bnum})")
+        plt.xlabel("Traces processed")
+        plt.ylabel(f"Sumden2 @ point {max_idx}")
+        plt.grid(True)
+        plt.savefig(f"{output_dir}/sumden2_best_bnum{bnum}.png", dpi=300)
+        plt.close()
 
 
-###############################################
-# MAIN EXECUTION
-###############################################
 if __name__ == "__main__":
+
+    update_interval = 100       # the second arg to attack.run(...)
+    output_dir = os.path.join(os.getcwd(), "graphs", "Mangard", project_name, "{numTraces}_traces")
+    os.makedirs(output_dir, exist_ok=True)
+    
     if len(sumden_pairs) > 0:
         # Optional: visualize sumden1 & sumden2 from sumden_pairs if your script uses them
-        bnum_sumden2 = visualize_sumden_by_bnum(sumden_pairs, numTraces, project_file)
-        # print(bnum_sumden2)
+        # bnum_sumden2 = visualize_sumden_by_bnum(sumden_pairs, numTraces, project_file)
+        #visualize_sumden_at_point_clean(sumden_pairs, numTraces=1000, project_file=project_file, target_idx=12, term="sumden2")
+        #plot_sumden1_and_sumden2_vs_traces(sumden_pairs, results_obj, numTraces, project_file)
+        plot_sumden1_best_guess(sumden_pairs,
+                                results_obj,
+                                update_interval,
+                                numTraces,
+                                output_dir)
+
+        # Plot sumden2 @ each byte’s max_idx (BEST guess):
+        plot_sumden2_at_maxidx(sumden_pairs,
+                               results_obj,
+                               update_interval,
+                               numTraces,
+                               output_dir)
+
+        print("Done plotting sumden1 & sumden2.")
     else:
         print("No sumden_pairs data available for custom sumden1/sumden2 plotting.\n")
 
-    # Now we get the standard Results object from the CPA
-    # results_obj = attack.get_statistics()  # => built-in 'Results' with find_maximums, numSubkeys
-    # if results_obj is not None:
-    #     # Plot sumden2 line graphs from find_maximums
-    #     plot_sumden2_line(attack, results_obj, project_file, numTraces)
-    # else:
-    #     print("Error: Could not retrieve standard Results object from 'attack.get_statistics()'.")
+   
