@@ -1,208 +1,177 @@
 import numpy as np
-import math
 from chipwhisperer.analyzer.attacks.algorithmsbase import AlgorithmsBase
-import IPython as ip
 
 class CPAProgressiveOneSubkey:
-    """This class is the WELFORD BASED CUSTOMIZED basic progressive CPA attack, capable of adding traces onto a variable with previous data"""
+    """Welford‐based progressive CPA for one subkey byte."""
     def __init__(self, model):
         self.model = model
         self.totalTraces = 0
         self.modelstate = {'knownkey': None}
 
-        # Initialize Welford's Variables 
-        self.n_welford = 0
-        self.mean_welford = None  # Will be initialized based on trace shape
-        self.M2_welford = None
-        self.sum_cross_welford = [None] * self.model.getPermPerSubkey()
-        self.stored_welford_variances = []  # for storing wellford variance
-        self.welford_diffs = [None] * self.model.getPermPerSubkey()
+        # Welford for traces
+        self.n_welford      = 0
+        self.mean_welford   = None   # will become a vector
+        self.M2_welford     = None   # Σ(t−t̄)²
 
-    def oneSubkey(self, bnum, pointRange, traces_all, numtraces, plaintexts, ciphertexts, knownkeys, progressBar, state, pbcnt, accumulate_variances):
+        # Per-key accumulators (initialized once we know trace length)
+        self.sum_cross_welford   = [None] * self.model.getPermPerSubkey()
+        self.sum_centered_hyp_sq = None
+
+        # Store final correlation curves
+        self.welford_diffs         = [None] * self.model.getPermPerSubkey()
+        #keep variance snapshots
+        self.stored_welford_variances = []
+
+    def oneSubkey(self, bnum, pointRange, traces_all, numtraces,
+                  plaintexts, ciphertexts, knownkeys,
+                  progressBar, state, pbcnt, accumulate_variances):
         diffs = [0] * self.model.getPermPerSubkey()
         self.totalTraces += numtraces
 
+        # 1) Crop if requested
         if pointRange is None:
             traces = traces_all
         else:
             traces = traces_all[:, pointRange[0]:pointRange[1]]
 
-        # Update Welford
-        for trace in traces:
+        # 2) Update Welford on the new batch of traces
+        for tr in traces:
             self.n_welford += 1
             if self.mean_welford is None:
-                self.mean_welford = np.zeros_like(trace, dtype=np.longdouble)
-                self.M2_welford = np.zeros_like(trace, dtype=np.longdouble)
-            delta = trace - self.mean_welford #difference between the new trace and old mean
+                self.mean_welford = np.zeros_like(tr, dtype=np.double)
+                self.M2_welford   = np.zeros_like(tr, dtype=np.double)
+            delta = tr - self.mean_welford
             self.mean_welford += delta / self.n_welford
-            delta2 = trace - self.mean_welford #difference between the new trace and the new mean (after update)
-            self.M2_welford += delta * delta2 # building sum of squared diffs
-            
-            # if accumulate_variances and self.n_welford > 1:
-            #     current_variance = self.M2_welford / (self.n_welford - 1)
-            #     self.stored_welford_variances.append((np.copy(current_variance), bnum, self.n_welford))
+            delta2 = tr - self.mean_welford
+            self.M2_welford += delta * delta2
 
-        #For each 0..0xFF possible value of the key byte
-        for key in range(0, self.model.getPermPerSubkey()):
-            #Initialize arrays & variables to zero
-            hyp = [0] * numtraces
+        if accumulate_variances and self.n_welford > 1:
+            # store corrected variance snapshot--> n-1 NO es el problema
+            var = self.M2_welford / (self.n_welford - 1)
+            self.stored_welford_variances.append((np.copy(var), bnum, self.n_welford))
 
-            #Formula for CPA & description found in "Power Analysis Attacks"
-            # by Mangard et al, page 124, formula 6.2.
-            #
-            # This has been modified to reduce computational requirements such that adding a new waveform
-            # doesn't require you to recalculate everything
-            prev_cts = np.insert(ciphertexts[:-1], 0, 0, axis=0)
-            prev_pts = np.insert(plaintexts[:-1], 0, 0, axis=0)
+        num_keys = self.model.getPermPerSubkey()
 
-            #Generate hypotheticals
-            for tnum in range(numtraces):
-                if len(plaintexts) > 0:
-                    pt = plaintexts[tnum]
+        # 3) Init per-key hyp-variance arrays once
+        if self.sum_centered_hyp_sq is None:
+            self.sum_centered_hyp_sq = [
+                np.zeros_like(self.mean_welford, dtype=np.double)
+                for _ in range(num_keys)
+            ]
 
-                if len(ciphertexts) > 0:
-                    ct = ciphertexts[tnum]
-
-                if len(prev_cts) > 0:
-                    prev_ct = prev_cts[tnum]
-
-                if len(prev_pts) > 0:
-                    prev_pt = prev_pts[tnum]
-
-                if knownkeys and len(knownkeys) > 0:
-                    nk = knownkeys[tnum]
-                else:
-                    nk = None
-
+        # 4) For each candidate key, accumulate cross‐products & hyp‐variance
+        for key in range(num_keys):
+            # build hypothesized leakage for this batch
+            hyp = np.zeros(numtraces, dtype=np.double)
+            for i in range(numtraces):
+                pt = plaintexts[i]
+                ct = ciphertexts[i]
+                nk = knownkeys[i] if knownkeys else None
                 state['knownkey'] = nk
 
                 if self.model._has_prev:
-                    hypint = self.model.leakage(pt, ct, prev_pt, prev_ct, key, bnum, state)
+                    hyp[i] = self.model.leakage(pt, ct, pt, ct, key, bnum, state)
                 else:
-                    hypint = self.model.leakage(pt, ct, key, bnum, state)
+                    hyp[i] = self.model.leakage(pt, ct, key, bnum, state)
 
-                hyp[tnum] = hypint
-
-            hyp = np.array(hyp)
-
+            # init cross‐product accumulator
             if self.sum_cross_welford[key] is None:
-                self.sum_cross_welford[key] = np.zeros_like(self.mean_welford, dtype=np.longdouble)
+                self.sum_cross_welford[key] = np.zeros_like(self.mean_welford, dtype=np.double)
 
-            centered_hyp = hyp - np.mean(hyp)
-            for i in range(len(traces)):
-                centered_trace = traces[i] - self.mean_welford
-                self.sum_cross_welford[key] += centered_hyp[i] * centered_trace
+            hyp_mean = hyp.mean()
+            centered_hyp = hyp - hyp_mean
 
-            #Store Welford variances
-            if accumulate_variances and self.n_welford >1:
-                current_variance = self.M2_welford / (self.n_welford - 1)
-                self.stored_welford_variances.append((np.copy(current_variance), bnum, self.n_welford))
+            for i, tr in enumerate(traces):
+                centered_tr = tr - self.mean_welford
+                self.sum_cross_welford[key]   += centered_hyp[i] * centered_tr
+                self.sum_centered_hyp_sq[key] += centered_hyp[i] ** 2
 
-            #THIS GUESSES CORRECTLY THE KEY BUT GIVES CORRELATIONS > 1!!!
-            # if self.n_welford > 1:
-            #     hyp_var = np.sum(centered_hyp ** 2)
-            #     denom = np.sqrt(hyp_var * self.M2_welford)
-            #     welford_corr = self.sum_cross_welford[key] / denom
-            #     self.welford_diffs[key] = welford_corr
-            #     diffs[key] = welford_corr
-
-        
-            #OTHER APPROACH, STILL CORR >1
-        
+            # 5) Compute Pearson-style r (Mangard Eq.6.2) once we have ≥2 traces
             if self.n_welford > 1:
-                n = self.n_welford
+                hyp_ssq   = self.sum_centered_hyp_sq[key]  # Σ(h−h̄)²
+                trace_ssq = self.M2_welford               # Σ(t−t̄)²
+                denom     = np.sqrt(hyp_ssq * trace_ssq)
+                denom[denom == 0] = 1e-12
 
-                hyp_sum = np.sum(centered_hyp, dtype=np.longdouble)
-                hyp_sqsum = np.sum(centered_hyp ** 2, dtype=np.longdouble)
-
-                # sumden1 = (hyp_sum ** 2 - n * hyp_sqsum)
-                sumden1 = hyp_sqsum * n - hyp_sum ** 2
-
-                trace_variance = self.M2_welford / (self.n_welford - 1)
-
-                denom = np.sqrt(sumden1 * trace_variance)
-                denom[denom == 0] = 1e-12  # prevent division by zero
-
-                corr = self.sum_cross_welford[key] / denom
-
+                corr      = self.sum_cross_welford[key] / denom
                 self.welford_diffs[key] = corr
-                diffs[key] = corr
+                diffs[key]             = corr
 
+            # progress callback
             if progressBar:
-                progressBar.updateStatus(pbcnt, (self.totalTraces - numtraces, self.totalTraces - 1, bnum))
+                progressBar.updateStatus(pbcnt,
+                  (self.totalTraces - numtraces,
+                   self.totalTraces - 1,
+                   bnum))
             pbcnt += 1
 
-        return (diffs, pbcnt)
+        return diffs, pbcnt
 
-   
+
 class CPAProgressiveCustom(AlgorithmsBase):
-    """CPA Attack done as a loop, using an algorithm which can progressively add traces & give output stats"""
+    """Wraps CPAProgressiveOneSubkey to progressively add traces."""
     _name = "Progressive Custom"
 
     def __init__(self):
-        AlgorithmsBase.__init__(self)
         super().__init__()
-        self.subkey_instances = []  # Added to store CPAProgressiveOneSubkey instances
-
+        self.subkey_instances = []
         self.getParams().addChildren([
-            {'name': 'Iteration Mode', 'key': 'itmode', 'type': 'list', 'values': {'Depth-First': 'df', 'Breadth-First': 'bf'}, 'value': 'bf', 'action': self.updateScript},
-            {'name': 'Skip when PGE=0', 'key': 'checkpge', 'type': 'bool', 'value': False, 'action': self.updateScript},
+            {'name': 'Iteration Mode', 'key': 'itmode',
+             'type': 'list',
+             'values': {'Depth-First':'df','Breadth-First':'bf'},
+             'value':'bf','action':self.updateScript},
+            {'name': 'Skip when PGE=0', 'key':'checkpge',
+             'type':'bool','value':False,'action':self.updateScript},
         ])
         self.updateScript()
 
     def addTraces(self, traceSource, tracerange, progressBar=None, pointRange=None):
-        numtraces = tracerange[1] - tracerange[0] + 1
+        # numtraces = tracerange[1] - tracerange[0] + 1
+        numtraces = tracerange[1] - tracerange[0]
         pbcnt = 0
+
+        # one CPAProgressiveOneSubkey per byte
         cpa = [None] * (max(self.brange) + 1)
         for bnum in self.brange:
             cpa_instance = CPAProgressiveOneSubkey(self.model)
             cpa[bnum] = cpa_instance
-            self.subkey_instances.append(cpa_instance)  # Track the instance
-        for bnum_df in [0]:
+            self.subkey_instances.append(cpa_instance)
+
+        # breadth-first over batches
+        for bnum in self.brange:
             tstart = 0
-            tend = self._reportingInterval
+            tend   = self._reportingInterval
 
             while tstart < numtraces:
                 if tend > numtraces:
                     tend = numtraces
 
-                data = []
-                textins = []
-                textouts = []
-                knownkeys = []
+                data, textins, textouts, knownkeys = [], [], [], []
                 for i in range(tstart, tend):
                     tnum = i + tracerange[0]
-                    try:
-                        data.append(traceSource.get_trace(tnum))
-                        textins.append(traceSource.get_textin(tnum))
-                        textouts.append(traceSource.get_textout(tnum))
-                        knownkeys.append(traceSource.get_known_key(tnum))
-                    except Exception as e:
-                        if progressBar:
-                            progressBar.abort(e.message)
-                        return
+                    data.append(traceSource.get_trace(tnum))
+                    textins.append( traceSource.get_textin(tnum) )
+                    textouts.append(traceSource.get_textout(tnum))
+                    knownkeys.append(traceSource.get_known_key(tnum))
 
-                traces = np.array(data)
-                textins = np.array(textins)
-                textouts = np.array(textouts)
+                traces   = np.array(data)
+                textins     = np.array(textins)
+                textouts   = np.array(textouts)
 
-                for bnum_bf in self.brange:
-                    #Chnage values according to the interval of traces that we want to study
-                    # accumulate_variances = True
-                    if tstart >= 0 and tend <= 1001:   # Error interval for ECG data is [18500, 46975]
-                        accumulate_variances = True
-                    (data, pbcnt) = cpa[bnum_bf].oneSubkey(
-                        bnum_bf, pointRange, traces, tend - tstart, textins, textouts, knownkeys, progressBar, cpa[bnum_bf].modelstate, pbcnt, accumulate_variances
-                    )
-                    self.stats.update_subkey(bnum_bf, data, tnum=tend)
+                accumulate_variances = (tstart >= 0 and tend <= 1000)
 
-                tend += self._reportingInterval
+                diffs, pbcnt = cpa[bnum].oneSubkey(
+                    bnum, pointRange,traces, tend - tstart,textins, textouts, knownkeys,progressBar, cpa[bnum].modelstate,
+                    pbcnt, accumulate_variances)
+
+                self.stats.update_subkey(bnum, diffs, tnum=tend)
+                
+                tend   += self._reportingInterval
                 tstart += self._reportingInterval
-                if self.sr:
-                    self.sr()
+                if self.sr: self.sr()
 
     def get_welford_variances(self):
-        all_vars = []
-        for subkey_instance in self.subkey_instances:
-            all_vars.extend(subkey_instance.stored_welford_variances)
-        return all_vars
+        vals = []
+        for inst in self.subkey_instances:
+            vals.extend(inst.stored_welford_variances)
+        return vals

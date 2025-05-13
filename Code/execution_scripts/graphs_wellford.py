@@ -6,8 +6,9 @@ import matplotlib.pyplot as plt
 import os
 
 
-project_file = "/Users/loredana/Desktop/TFG/randattackarduino_prueba/randattackarduino_prueba"
+project_file = "/Users/loredana/Desktop/TFG/attackarduino_Abraham_ECG_Malo_16_bits/attackarduino_Abraham_ECG_Malo_16_bits"
 print(f"Project file: {project_file}")
+project_name = os.path.basename(project_file)
 
 # Open the project
 project = cw.open_project(project_file)
@@ -111,6 +112,9 @@ def visualize_welford_variance_global(welford_data, numTraces, project_file):
     print(f"Saved global Welford variance plot: {file_path}")
 
 if __name__ == "__main__":
+    output_dir = os.path.join(os.getcwd(), "graphs", "Welford", project_name, f"{numTraces}_traces")
+    os.makedirs(output_dir, exist_ok=True)
+    
     print("\nWelford Variance Snapshots (first 5):")
     for i, (var, bnum, n) in enumerate(welford_data[:5]):
         print(f"  [bnum={bnum}] n={n}, variance shape={var.shape}")
@@ -121,6 +125,6 @@ if __name__ == "__main__":
 
     if welford_data:
         #visualize_welford_variance_global(welford_data, numTraces, project_file)
-        visualize_welford_variance_at_point(welford_data, numTraces, project_file, target_idx=12)
+        visualize_welford_variance_at_point(welford_data, numTraces, project_file, target_idx=1)
     else:
         print("No Welford data available for plotting.")

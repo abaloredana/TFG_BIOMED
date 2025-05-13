@@ -156,7 +156,7 @@ class CPAProgressiveCustom(AlgorithmsBase):
                 for bnum_bf in self.brange:
                     #Chnage values according to the interval of traces that we want to study
                     accumulate_sumdens = False
-                    if tstart >=0 and tend <= 7000:   # Error interval for ECG data is [18500, 46975]
+                    if tstart >=0 and tend <= 1000:   # Error interval for ECG data is [18500, 46975]
                         accumulate_sumdens = True
                     (data, pbcnt) = cpa[bnum_bf].oneSubkey(
                         bnum_bf, pointRange, traces, tend - tstart, textins, textouts, knownkeys, progressBar, cpa[bnum_bf].modelstate, pbcnt, accumulate_sumdens
