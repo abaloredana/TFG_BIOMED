@@ -44,12 +44,11 @@ class CPAProgressiveOneSubkey:
             self.mean_welford += delta / self.n_welford
             delta2 = tr - self.mean_welford
             self.M2_welford += delta * delta2
-
+        #AQUI IBA EL IF ACCUMULATE_VARIANCES AND SELF.N_WELFORD > 1
         if accumulate_variances and self.n_welford > 1:
-            # store corrected variance snapshot--> n-1 NO es el problema
             var = self.M2_welford / (self.n_welford - 1)
-            self.stored_welford_variances.append((np.copy(var), bnum, self.n_welford))
-
+            
+        
         num_keys = self.model.getPermPerSubkey()
 
         # 3) Init per-key hyp-variance arrays once
@@ -89,10 +88,14 @@ class CPAProgressiveOneSubkey:
             # 5) Compute Pearson-style r (Mangard Eq.6.2) once we have ≥2 traces
             if self.n_welford > 1:
                 hyp_ssq   = self.sum_centered_hyp_sq[key]  # Σ(h−h̄)²
+                hyp_ssq_normalized = hyp_ssq / (self.n_welford - 1)
                 trace_ssq = self.M2_welford               # Σ(t−t̄)²
+                if accumulate_variances:
+                    self.stored_welford_variances.append((np.copy(hyp_ssq_normalized[0]), bnum, key, np.copy(var)))
+
                 denom     = np.sqrt(hyp_ssq * trace_ssq)
                 denom[denom == 0] = 1e-12
-
+                
                 corr      = self.sum_cross_welford[key] / denom
                 self.welford_diffs[key] = corr
                 diffs[key]             = corr
@@ -158,7 +161,7 @@ class CPAProgressiveCustom(AlgorithmsBase):
                 textins     = np.array(textins)
                 textouts   = np.array(textouts)
 
-                accumulate_variances = (tstart >= 0 and tend <= 1000)
+                accumulate_variances = (tstart >= 0 and tend <= 5000)
 
                 diffs, pbcnt = cpa[bnum].oneSubkey(
                     bnum, pointRange,traces, tend - tstart,textins, textouts, knownkeys,progressBar, cpa[bnum].modelstate,
