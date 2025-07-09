@@ -17,8 +17,9 @@ class CPAProgressiveOneSubkey:
 
 
         
-    # List to store tuples of (sumden1, sumden2) for each bnum iteration
+    # Lists to store tuples of (sumden1, sumden2) and diffs for each bnum iteration
         self.stored_sumden_pairs = []
+        self.stored_diffs = []
 
     def oneSubkey(self, bnum, pointRange, traces_all, numtraces, plaintexts, ciphertexts, knownkeys, progressBar, state, pbcnt, accumulate_sumdens):
         diffs = [0] * self.model.getPermPerSubkey()
@@ -33,6 +34,7 @@ class CPAProgressiveOneSubkey:
         self.sumtq += np.sum(np.square(traces), axis=0, dtype=np.double)
         self.sumt += np.sum(traces, axis=0, dtype=np.double)
         sumden2 = np.square(self.sumt) - self.totalTraces * self.sumtq
+        sumden2_normalized = sumden2 / (self.totalTraces - 1)
 
         #For each 0..0xFF possible value of the key byte
         for key in range(0, self.model.getPermPerSubkey()):
@@ -86,15 +88,19 @@ class CPAProgressiveOneSubkey:
             self.sumhq[key] += np.sum(np.square(hyp), axis=0, dtype=np.double)
 
             sumden1 = (np.square(self.sumh[key]) - self.totalTraces * self.sumhq[key])
+            sumden1_normalized = sumden1 / (self.totalTraces - 1)
 
-            # Store tuple (sumden1, bnum, sumden2) in list
 
-            if accumulate_sumdens:
-                self.stored_sumden_pairs.append((sumden1, bnum, key, sumden2))
+            # Store tuple (sumden1, bnum, key sumden2) in list
 
+            
             sumden = sumden1 * sumden2
 
             diffs[key] = sumnum / np.sqrt(sumden)
+
+            if accumulate_sumdens:
+                self.stored_sumden_pairs.append((sumden1_normalized, bnum, key, sumden2_normalized))
+                self.stored_diffs.append((diffs.copy(), bnum, key))
 
             if progressBar:
                 progressBar.updateStatus(pbcnt, (self.totalTraces - numtraces, self.totalTraces - 1, bnum))
@@ -156,7 +162,7 @@ class CPAProgressiveCustom(AlgorithmsBase):
                 for bnum_bf in self.brange:
                     #Chnage values according to the interval of traces that we want to study
                     accumulate_sumdens = False
-                    if tstart >=0 and tend <= 1000:   # Error interval for ECG data is [18500, 46975]
+                    if tstart >=0 and tend <= 5000:   # Error interval for ECG data is [18500, 46975]
                         accumulate_sumdens = True
                     (data, pbcnt) = cpa[bnum_bf].oneSubkey(
                         bnum_bf, pointRange, traces, tend - tstart, textins, textouts, knownkeys, progressBar, cpa[bnum_bf].modelstate, pbcnt, accumulate_sumdens
@@ -173,3 +179,10 @@ class CPAProgressiveCustom(AlgorithmsBase):
         for subkey_instance in self.subkey_instances:
             sumden_pairs.extend(subkey_instance.stored_sumden_pairs)
         return sumden_pairs
+    
+    def get_diffs_history(self):
+        diffs_hist = []
+        for subkey_instance in self.subkey_instances:
+            diffs_hist.extend(subkey_instance.stored_diffs)
+        return diffs_hist
+        
