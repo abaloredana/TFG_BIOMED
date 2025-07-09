@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import os
 
 # --- Adjust this path to your desired project file ---
-project_file = "/Users/loredana/Desktop/TFG/attackarduino_Abraham_ECG_Malo_16_bits/attackarduino_Abraham_ECG_Malo_16_bits"
+#project_file = "/Users/loredana/Desktop/TFG/attackarduino_Abraham_ECG_Malo_16_bits/attackarduino_Abraham_ECG_Malo_16_bits"
+project_file = "/Users/loredana/Desktop/TFG/randattackarduino_prueba/randattackarduino_prueba"
 print(f"Project file: {project_file}")
 project_name = os.path.basename(project_file)
 
@@ -18,14 +19,15 @@ leak_model = cwa.leakage_models.sbox_output
 attack = cwa.cpa(project, leak_model)
 print("CPA algorithm in use:", type(attack.algorithm))
 print("Defined in file:", attack.algorithm.__class__.__module__)
-
+update_interval = 100
 # Run the attack
-attack_run_output = attack.run(None, 100)
+attack_run_output = attack.run(None, update_interval)
 print("\nAttack Results (Mangard):")
 print(attack_run_output)
 
 # Retrieve the ChipWhisperer Results object that has find_maximums()
 results_obj = attack.get_statistics()  # This returns a standard 'Results' instance
+
 
 try:
     sumden_pairs = attack.algorithm.get_sumden_pairs()
@@ -36,6 +38,14 @@ try:
 except AttributeError:
     print("\nNo 'get_sumden_pairs()' method on this attack instance.")
     sumden_pairs = []
+    
+print("\n— Checking for get_diffs_history() method —")
+if hasattr(attack.algorithm, 'get_diffs_history'):
+    print("✓ get_diffs_history exists")
+else:
+    print("✗ No get_diffs_history() method found")
+    diffs_hist = None
+
 
 max_info =results_obj.find_maximums()
 numSubkeys = results_obj.numSubkeys
@@ -47,6 +57,12 @@ os.makedirs(output_dir, exist_ok=True)
 # If the .cfg says numTraces=1000, 5000, or 10000, set it here:
 
 numTraces = 1000
+# 2.5)Conditions for x-axis adjustment
+n_batches = numTraces // update_interval
+start_trace_subset = 0  #must match the value for tstart in accumulate_sumdens conditional within progressive class
+end_trace_subset = 1000   #must match the value for tend in accumulate_sumdens conditional within progressive class
+subTraces = end_trace_subset - start_trace_subset
+subset_batches = subTraces // update_interval
 
 # Check/Save metadata to avoid overwriting
 def check_existing_graph(file_path, project_file, numTraces):
@@ -79,13 +95,7 @@ def plot_sumden1_best_guess(sumden_pairs, results_obj,
     for (sumden1, bnum, hyp, sumden2) in sumden_pairs:
         
         by_pair.setdefault((bnum, hyp), []).append(sumden1)
-        
-    # 2.5)Conditions for x-axis adjustment
-    n_batches = numTraces // update_interval
-    start_trace_subset = 0  #must match the value for tstart in accumulate_sumdens conditional within progressive class
-    end_trace_subset = 5000   #must match the value for tend in accumulate_sumdens conditional within progressive class
-    subTraces = end_trace_subset - start_trace_subset
-    subset_batches = subTraces // update_interval
+    
 
     # 3) Plot, for each subkey byte, only the best‐guess curve
     for bnum, hyp in best_hyps.items():
@@ -107,7 +117,8 @@ def plot_sumden1_best_guess(sumden_pairs, results_obj,
         plt.xlabel(f"Traces processed: [{start_trace_subset}, {end_trace_subset}]")
         plt.ylabel("sumden1")
         plt.grid(True)
-        plt.savefig(f"{output_dir}/sumden1_best_bnum{bnum}_{subset_batches}batches.png", dpi=300)
+        outpath = os.path.join(output_dir ,f"sumden1_best_bnum{bnum}_{subset_batches}batches.png")
+        plt.savefig(outpath, dpi=300)
         plt.close()
         
 def plot_sumden2_at_maxidx(sumden_pairs, results_obj,
@@ -124,15 +135,6 @@ def plot_sumden2_at_maxidx(sumden_pairs, results_obj,
     for (sumden1, bnum, hyp, sumden2) in sumden_pairs:
             
         by_pair.setdefault((bnum, hyp), []).append(sumden2)
-    
-     # 2.5)Conditions for x-axis adjustment
-    n_batches = numTraces // update_interval
-    start_trace_subset = 0  #must match the value for tstart in accumulate_sumdens conditional within progressive class
-    end_trace_subset = 1000   #must match the value for tend in accumulate_sumdens conditional within progressive class
-    subTraces = end_trace_subset - start_trace_subset
-    subset_batches = subTraces // update_interval
-
-  
 
     # 3) Plot, for each subkey, the sumden2 at its max_idx for its best hypothesis
     for bnum, (hyp, max_idx) in info.items():
@@ -154,97 +156,207 @@ def plot_sumden2_at_maxidx(sumden_pairs, results_obj,
         plt.xlabel(f"Traces processed: [{start_trace_subset}, {end_trace_subset}]")
         plt.ylabel(f"sumden2 @ point {max_idx}")
         plt.grid(True)
-        plt.savefig(f"{output_dir}/sumden2_best_bnum{bnum}_{subset_batches}batches.png", dpi=300)
+        outpath = os.path.join(output_dir, f"sumden2_best_bnum{bnum}_{subset_batches}batches.png")
+        plt.savefig(outpath, dpi=300)
         plt.close()
         
-def plot_sumden2_overlay(sumden_pairs,bnum, results_obj, update_interval, num_traces, out_dir):
-    """
-    Overlay plot of sumden2_normalized for the best‐guess vs correct hypothesis
-    for subkey byte `bnum`.
-    
-    sumden_pairs      : list of (sumden1_norm, bnum, hyp, sumden2_norm)
-    best_guess_info   : dict byte -> (hyp, max_batch_idx)
-    correct_info      : dict byte -> (hyp, max_batch_idx)
-    bnum              : which subkey byte to plot
-    update_interval   : # of traces per batch
-    num_traces        : total number of traces
-    out_dir           : directory in which to save the PNG
-    """
-    
-    best_guess_info = { bnum: (max_info[bnum][0][0], max_info[bnum][0][1])
-             for bnum in range(results_obj.numSubkeys) }
-    correct_info = { bnum: (max_info[bnum][1][0], max_info[bnum][1][1])
-             for bnum in range(results_obj.numSubkeys) }
 
-    # 1) bucket sumden2_norm by (byte, hypothesis)
+def plot_sumden2_best_and_true(sumden_pairs,
+                               results_obj,
+                               update_interval,
+                               output_dir,
+                               byte,
+                               true_key=2):
+    """
+    For a single byte index:
+      • finds the best-guess hypothesis from results_obj.find_maximums()
+      • finds the tuple whose key_guess == true_key
+      • extracts sumden2 for each of those two hypotheses
+      • plots them overlaid
+    """
+ 
+    max_info   = results_obj.find_maximums()      # list over bytes
+    best_guess = max_info[byte][0][0]              # best‐guess key for bnum
+                              # your correct subkey
     by_pair = {}
-    for _, bb, hyp, sd2_norm in sumden_pairs:
-        by_pair.setdefault((bb, hyp), []).append(sd2_norm)
+    for sumden1, bnum, hyp, sumden2 in sumden_pairs:
+        by_pair.setdefault((bnum, hyp), []).append(sumden2)
 
-    # 2) x‐axis = traces processed at each batch
-    n_batches = num_traces // update_interval
-    x = [(i+1)*update_interval for i in range(n_batches)]
 
-    # 3) unpack the two hypotheses & their max‐idx
-    best_h, best_idx = best_guess_info[bnum]
-    corr_h, corr_idx = correct_info[bnum]
+    
+    best_hyps = { bnum: (max_info[bnum][0][0], max_info[bnum][0][1]) for bnum in range(results_obj.numSubkeys) }
+    
+    best_hyp, best_max_idx = best_hyps[byte]
+    true_max_idx = next(
+    loc for (hyp, loc, corr) in max_info[byte]
+    if hyp == true_key
+)
 
-    y_best = by_pair.get((bnum, best_h), [])
-    y_corr = by_pair.get((bnum, corr_h), [])
 
-    # 4) plot overlay
-    plt.figure(figsize=(8,4))
-    plt.plot(x, y_best, marker='|', label=f"best=0x{best_h:02x}")
-    plt.plot(x, y_corr, marker='|', label=f"correct=0x{corr_h:02x}")
-    # vertical lines at the batch where each hit its max
-    plt.axvline((best_idx+1)*update_interval, linestyle='--',
-                label=f"best idx @ {(best_idx+1)*update_interval}")
-    plt.axvline((corr_idx+1)*update_interval, linestyle='--',
-                label=f"correct idx @ {(corr_idx+1)*update_interval}")
+    # ─── collect the series for each hypothesis ────────────────────
+    pairs_to_plot = [
+    (best_hyp,  best_max_idx,f"Best guess (h=0x{best_hyp:02x})", "-", "tab:blue"),
+    (true_key,  true_max_idx,f"True key   (h=0x{true_key:02x})","-", "tab:orange"),
+    ]
 
-    plt.title(f"sumden2_normalized comparison — byte {bnum}")
+    plt.figure(figsize=(8,5))
+
+    for hyp, max_idx, label, style, color in pairs_to_plot:
+        # grab only byte & the desired hyp
+        vectors = by_pair.get((byte, hyp), [])
+        
+        # choose x based on how many batches we actually have
+        if len(vectors) == n_batches:
+            x = [(i+1)*update_interval for i in range(n_batches)]
+        elif len(vectors) == subset_batches:
+            x = [(i+1)*update_interval for i in range(subset_batches)]
+        else:
+            print(f"Warning: for hyp=0x{hyp:02x}, expected {n_batches} or {subset_batches} points, got {len(vectors)}")
+            x = [(i+1)*update_interval for i in range(len(vectors))]
+
+        # extract the single sample‐point per batch
+        y = [ vec[max_idx] for vec in vectors ]
+        plt.plot(x, y, style, label=label, color=color)
+
+    # ─── finalize & save ───────────────────────────────────────────
     plt.xlabel("Traces processed")
-    plt.ylabel("sumden2_normalized")
-    plt.grid(True)
+    plt.ylabel("sumden2 at max_idx")
+    plt.title(f"Byte {byte}: best vs true sumden2")
     plt.legend(loc="best")
-
-    # 5) save
-    os.makedirs(out_dir, exist_ok=True)
-    fname = os.path.join(out_dir,"overlapping graphs" f"sumden2_compare_bnum{bnum:02d}.png")
-    plt.savefig(fname, dpi=300)
+    plt.grid(True)
+    
+    outfn = os.path.join(output_dir, f"sumden2_best_vs_true_b{byte}_{subset_batches}batches.png")
+    plt.savefig(outfn, dpi=300)
     plt.close()
+    print(f"→ Saved overlay plot at {outfn}")
 
-    print(f"→ saved comparison plot for byte {bnum} to {fname}")
+def plot_sumden2_heatmap(sumden_pairs,
+                          results_obj,
+                          output_dir):
+    """
+    Generates and saves a heatmap of the final sumden2 vectors for all
+    subkey bytes and their guesses, marking byte boundaries, max-correlation
+    points, and coloring y-axis labels by correctness.
+
+    Encryption key is fixed:
+      bytes 0–7  : subkey == 1
+      bytes 8–15 : subkey == 2
+
+    Parameters
+    ----------
+    sumden_pairs : list of tuples
+        Each entry is (sumden1, bnum, hyp, sumden2_array) from the final batch.
+    results_obj : chipwhisperer.cwa.cpa.get_statistics()
+        Used to get find_maximums() info: list  (bnums [0,15])--> each a list of correlations in decreasing order for eack subkey guess [0,255]--> each a 3-tuple (guess, location, correlation).
+    output_dir : str
+        Directory in which to save 'sumden2_heatmap.png'.
+    """
+    # 1) Organize sumden2 arrays by (byte, hypothesis)
+    by_pair = {}
+    for _s1, bnum, hyp, s2 in sumden_pairs:
+        by_pair.setdefault((bnum, hyp), []).append(s2)
+
+    # 2) Get max_info and compute dimensions
+    max_info = results_obj.find_maximums()
+    num_subkeys = len(max_info)       # expected 16
+    guesses_per = len(max_info[0])    # expected 256
+    total_rows = num_subkeys * guesses_per
+
+    # 3) Sample-point length
+    sample_len = next(iter(by_pair.values()))[-1].shape[0]
+
+    # 4) Build heatmap array
+    heatmap = np.zeros((total_rows, sample_len))
+    row = 0
+    for b in range(num_subkeys):
+        for (guess, _, _) in max_info[b]:
+            vecs = by_pair.get((b, guess), [])
+            if not vecs:
+                raise RuntimeError(f"Missing data for byte={b}, hyp={guess}")
+            heatmap[row, :] = vecs[-1]
+            row += 1
+
+    # 5) Plot heatmap
+    plt.figure(figsize=(12, 8))
+    im = plt.imshow(
+        heatmap,
+        aspect='auto',
+        origin='lower',
+        extent=[0, sample_len, 0, total_rows],
+        cmap='viridis'
+    )
+    plt.colorbar(im, label='sumden2')
+    plt.xlabel('Trace sample point index')
+    plt.ylabel('Subkey byte & guess')
+    plt.title('Heatmap of final sumden2 across all subkeys and guesses')
+
+    # 6) Draw byte boundaries
+    for b in range(1, num_subkeys):
+        y = b * guesses_per
+        plt.hlines(y, 0, sample_len, colors='white', linestyles='--', linewidth=0.5)
+
+    # 7) Mark max-correlation sample points per byte
+    for b in range(num_subkeys):
+        _, loc, _ = max_info[b][0]
+        y0 = b * guesses_per
+        y1 = y0 + guesses_per
+        plt.vlines(loc, y0, y1, colors='red', linestyles='-', linewidth=1)
+
+    # 8) Y-axis labels: one per byte at center, colored by guess correctness
+    yticks = [(b + 0.5) * guesses_per for b in range(num_subkeys)]
+    ylabels = []
+    ground_truth = [1]*8 + [2]*8
+    for b in range(num_subkeys):
+        # determine if best guess equals ground truth
+        best_guess = max_info[b][0][0]
+        correct = (best_guess == ground_truth[b])
+        ylabels.append(f'byte {b}')
+    plt.yticks(yticks, ylabels)
+    # color tick labels individually
+    for tick, b in zip(plt.gca().get_yticklabels(), range(num_subkeys)):
+        best_guess = max_info[b][0][0]
+        correct = (best_guess == ground_truth[b])
+        tick.set_color('black' if correct else 'red')
+
+    # 9) Save figure
+    outpath = os.path.join(output_dir, 'sumden2_heatmap.png')
+    plt.savefig(outpath, dpi=300)
+    plt.close()
+    print(f"→ Saved heatmap at {outpath}")
+    plt.close()
+ 
+
 
 if __name__ == "__main__":
 
-    update_interval = 100       # the second arg to attack.run(...)
     output_dir = os.path.join(os.getcwd(), "graphs", "Mangard", project_name, f"{numTraces}_traces")
     os.makedirs(output_dir, exist_ok=True)
     
     if len(sumden_pairs) > 0:
-        
-        # bnum_sumden2 = visualize_sumden_by_bnum(sumden_pairs, numTraces, project_file)
-        #visualize_sumden_at_point_clean(sumden_pairs, numTraces=1000, project_file=project_file, target_idx=12, term="sumden2")
-        #plot_sumden1_and_sumden2_vs_traces(sumden_pairs, results_obj, numTraces, project_file)
-        by_pair1 = plot_sumden1_best_guess(sumden_pairs,
+ 
+        plot_sumden1_best_guess(sumden_pairs,
                                 results_obj,
                                 update_interval,
                                 numTraces,
                                 output_dir)
 
         # Plot sumden2 @ each byte’s max_idx (BEST guess):
-        by_pair2 = plot_sumden2_at_maxidx(sumden_pairs,
+        plot_sumden2_at_maxidx(sumden_pairs,
                                results_obj,
                                update_interval,
                                numTraces,
                                output_dir)
-        plot_sumden2_overlay(sumden_pairs,
-                    bnum = 12,
-                    results_obj,
-                    update_interval,
-                    numTraces,
-                    output_dir))
+                               
+        plot_sumden2_best_and_true(sumden_pairs,
+                                results_obj,
+                                update_interval,
+                                output_dir,
+                                byte=12,
+                                true_key=2)
+                                
+        plot_sumden2_heatmap(sumden_pairs,
+                          results_obj,
+                          output_dir)
 
         print("Done plotting sumden1 & sumden2.")
     else:
