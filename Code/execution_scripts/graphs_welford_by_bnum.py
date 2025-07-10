@@ -41,13 +41,8 @@ except AttributeError:
 
 # --- Prepare output directory ---
 # Manually set total traces (must match your experiment)
-numTraces = 5000
-# 3) X‐axis: batches of traces
-n_batches = numTraces // update_interval
-start_trace_subset = 0
-end_trace_subset = 5000
-subTraces = end_trace_subset - start_trace_subset
-subset_batches = subTraces // update_interval
+numTraces = 1000
+
 
 output_dir = os.path.join(os.getcwd(), "graphs", "Welford", project_name, f"{numTraces}_traces")
 os.makedirs(output_dir, exist_ok=True)
@@ -67,14 +62,25 @@ def plot_hyp_variance_normalized_best_guess(wdata, results, upd_int, nTraces, ou
         by_pair.setdefault((bnum, hyp), []).append(hyp_ssq_norm)
 
     # 3) X‐axis: batches of traces
-    n_batches = nTraces // upd_int
+    # 3) X‐axis: batches of traces
+    n_batches = numTraces // update_interval
+    start_trace_subset = 200
+    end_trace_subset = 800
+    subTraces = end_trace_subset - start_trace_subset
+    subset_batches = subTraces // update_interval
     x = [(i+1)*upd_int for i in range(n_batches)]
+    
 
     # 4) Plot one figure per subkey
     for bnum, hyp in best_hyps.items():
         y = by_pair.get((bnum, hyp), [])
+        x = [(i+1)*update_interval for i in range(n_batches)] #For numTraces attack
         if len(y) != n_batches:
-            print(f"Warning: expected {n_batches} points for bnum={bnum}, hyp=0x{hyp:02x}, got {len(y)}")
+            if len(y) == subset_batches:
+                x = [(i+1)*update_interval for i in range(subset_batches)] #For subTraces attack
+            elif len(y) != subset_batches:
+                print(f"Warning: x and y axis out of expected ranges")
+         
         plt.figure(figsize=(8,4))
         plt.plot(x, y, marker='.')
         plt.title(f"Hypothesis variance: hyp_ssq_normalized (best guess={hyp:#02x}) vs. Traces (bnum={bnum})")
@@ -99,7 +105,12 @@ def plot_trace_variance_normalized_best_guess(wdata, results, upd_int, nTraces, 
     for (hyp_ssq_norm, bnum, hyp, var) in wdata:
         by_pair.setdefault((bnum, hyp), []).append(var)
 
-
+    # 3) X‐axis: batches of traces
+    n_batches = nTraces // upd_int
+    start_trace_subset = 200
+    end_trace_subset = 800
+    subTraces = end_trace_subset - start_trace_subset
+    subset_batches = subTraces // upd_int
     
 
     # 4) Plot one figure per subkey, the trace variance at its max_idx for its best hypothesis
